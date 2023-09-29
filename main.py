@@ -28,7 +28,7 @@ data['sentiment'].value_counts().tolist()
 # configurations
 train_maxlen = 140
 batch_size = 16
-epochs = 10
+epochs = 1
 bert_model = 'bert-base-uncased'
 learning_rate = 2e-5
 
@@ -84,7 +84,7 @@ def train_function(data_loader, model, optimizer, device, loss_function, schedul
     """
     Function defines the training that we will happen over the entire dataset
     """
-    model = model.train()
+    # model = model.train()
     losses = []
     correct_predictions = 0
 
@@ -241,7 +241,7 @@ def run():
     )
     history = defaultdict(list)
     best_accuracy = 0
-
+    model.train()
     for epoch in range(epochs):
         
         # Show details 
