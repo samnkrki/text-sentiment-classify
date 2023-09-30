@@ -31,6 +31,7 @@ batch_size = 8
 epochs = 10
 bert_model = 'bert-base-uncased'
 learning_rate = 2e-5
+map_dict={'neutral': 0, 'positive': 1, 'negative': 2}
 
 class Tokenize_dataset:
   """
@@ -186,9 +187,9 @@ def load_train_valid_data():
     df_train = df_train.sample(frac=0.1)
     df_valid = df_valid.sample(frac=0.1)
 
-    df_train['target'] = df_train['sentiment'].map({'neutral': 0, 'positive': 1, 'negative': 2})
+    df_train['target'] = df_train['sentiment'].map(map_dict)
     df_train['target'] = df_train['target']
-    df_valid['target'] = df_valid['sentiment'].map({'neutral': 0, 'positive': 1, 'negative': 2})
+    df_valid['target'] = df_valid['sentiment'].map(map_dict)
     df_valid['target'] = df_valid['target']
     df_valid = df_valid.dropna(subset=['target'])
     df_train = df_train.dropna(subset=['target'])
@@ -312,63 +313,63 @@ def run():
                     input_ids=input_ids,
                     attention_mask=attention_mask
                 )
-                print("outputs of eval", outputs);
+                # print("outputs of eval", outputs);
                 _, preds = torch.max(outputs, dim=1)
                 print(preds, targets, "prediction vs target in eval");
                 loss = loss_function(outputs, targets)
                 val_correct_predictions += torch.sum(preds == targets)
                 val_losses.append(loss.item())
 
-            val_acc =val_correct_predictions.double() / len(df_valid.index)
-            val_loss = np.mean(val_losses)    
-            print(f"Val loss {val_loss} accuracy {val_acc}")
-            print("epoch end, beginning next")
+        val_acc =val_correct_predictions.double() / len(df_valid.index)
+        val_loss = np.mean(val_losses)    
+        print(f"Val loss {val_loss} accuracy {val_acc}")
+        print("epoch end, beginning next")
     
-    history['train_acc'].append(train_acc)
-    history['train_loss'].append(train_loss)
-    history['val_acc'].append(val_acc)
-    history['val_loss'].append(val_loss)
-    
-    # If we beat prev performance
-    if val_acc > best_accuracy:
-        torch.save(model.state_dict(), 'best_model_state.bin')
-        best_accuracy = val_acc
+        history['train_acc'].append(train_acc)
+        history['train_loss'].append(train_loss)
+        history['val_acc'].append(val_acc)
+        history['val_loss'].append(val_loss)
+        
+        # If we beat prev performance
+        if val_acc > best_accuracy:
+            torch.save(model.state_dict(), 'best_model_state.bin')
+            best_accuracy = val_acc
 
     plot_graphs(history)
     print("The end")
 
-def get_predictions(model, data_loader, device):
-    model = model.eval()
+def get_predictions():
+    review_text = "This is ridiculuous."
+    tokenizer = BertTokenizer.from_pretrained(bert_model)
+    encoded_review = tokenizer.encode_plus(
+        str(review_text),
+        add_special_tokens = True,
+        max_length = 140,
+        pad_to_max_length = True,
+        truncation = True
+    )
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    review_texts = []
-    predictions = []
-    prediction_probs = []
-    real_values = []
+    input_ids = torch.tensor(encoded_review['input_ids']).unsqueeze(0)
+    attention_mask = torch.tensor(encoded_review['attention_mask']).unsqueeze(0)
+    token_type_ids = torch.tensor(encoded_review["token_type_ids"]).unsqueeze(0)
 
-    with torch.no_grad():
-        for d in data_loader:
-            texts = d["review_text"]
-            input_ids = d["input_ids"].to(device)
-            attention_mask = d["attention_mask"].to(device)
-            targets = d["targets"].to(device)
-
-            # Get outouts
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask
-            )
-            _, preds = torch.max(outputs, dim=1)
-
-            review_texts.extend(texts)
-            predictions.extend(preds)
-            prediction_probs.extend(outputs)
-            real_values.extend(targets)
-
-    predictions = torch.stack(predictions).cpu()
-    prediction_probs = torch.stack(prediction_probs).cpu()
-    real_values = torch.stack(real_values).cpu()
-
-    return review_texts, predictions, prediction_probs, real_values
+    model = CompleteModel(bert_model, 3).to(device)
+    model.load_state_dict(torch.load("best_model_state.bin"), strict=False)
+    model.eval()
+# predict with the model
+    output = model(
+        input_ids=input_ids,
+        attention_mask=attention_mask
+    )
+    _, preds = torch.max(output, dim=1)
+    # find key in map_dict whose value matches preds.item()
+    predicted_sentiment = [i for i in map_dict if map_dict[i]==preds.item()]
+    
+    print(f'Review text: {review_text}')
+    print(f'Sentiment  : {predicted_sentiment}')
 
 if __name__ == "__main__":
-  run()
+    run()
+    # to run predictions, use the following function
+    # get_predictions()
