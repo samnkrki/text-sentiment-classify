@@ -6,8 +6,8 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from transformers import BertModel, BertTokenizer, AdamW, get_linear_schedule_with_warmup
-from torch.optim import lr_scheduler
+from transformers import BertModel, BertTokenizer, get_linear_schedule_with_warmup
+from torch.optim import lr_scheduler, AdamW, SGD
 from collections import defaultdict
 
 import logging
@@ -27,8 +27,8 @@ data['sentiment'].value_counts().tolist()
 
 # configurations
 train_maxlen = 140
-batch_size = 16
-epochs = 1
+batch_size = 8
+epochs = 10
 bert_model = 'bert-base-uncased'
 learning_rate = 2e-5
 
@@ -85,6 +85,7 @@ def train_function(data_loader, model, optimizer, device, loss_function, schedul
     Function defines the training that we will happen over the entire dataset
     """
     # model = model.train()
+    model.train()
     losses = []
     correct_predictions = 0
 
@@ -107,21 +108,21 @@ def train_function(data_loader, model, optimizer, device, loss_function, schedul
         correct_predictions += torch.sum(preds == targets)
         losses.append(loss.item())
         
-        # Backward prop
-        loss.backward()
-        
         # Gradient Descent
         nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
-        scheduler.step()
         optimizer.zero_grad()
+        # Backward prop
+        loss.backward()
+        optimizer.step()
+    scheduler.step()
+    print("Optimizer lr=%.4f" % (optimizer.param_groups[0]["lr"]))
     
     return correct_predictions.double() / n_examples, np.mean(losses)
 
 # evaluation function
 def eval_function(data_loader, model, device, loss_function, n_examples):
-    model = model.eval()
-    
+    # model = model.eval()
+    model.eval()
     losses = []
     correct_predictions = 0
     
@@ -136,13 +137,15 @@ def eval_function(data_loader, model, device, loss_function, n_examples):
                 input_ids=input_ids,
                 attention_mask=attention_mask
             )
-            
+            print("outputs", outputs);
             _, preds = torch.max(outputs, dim=1)
+            print(preds, targets, "prediction vs target in eval");
             loss = loss_function(outputs, targets)
-            
             correct_predictions += torch.sum(preds == targets)
             losses.append(loss.item())
-            
+    print(correct_predictions, n_examples, "predictions and examples")
+    print(losses, np.mean(losses), np.sum(losses), "losses, mean loss and sum of losses")
+                
     return correct_predictions.double() / n_examples, np.mean(losses)
 
 # complete custom model from pretrained bert
@@ -174,11 +177,14 @@ def plot_graphs(history):
     plt.legend()
     plt.ylim([0, 1]);
   
-def run():
+def load_train_valid_data():
     training_set_path = "train.csv"
     validation_set_path = 'test.csv'
     df_train = pd.read_csv(training_set_path, encoding="unicode_escape")
     df_valid = pd.read_csv(validation_set_path, encoding="unicode_escape")
+
+    df_train = df_train.sample(frac=0.1)
+    df_valid = df_valid.sample(frac=0.1)
 
     df_train['target'] = df_train['sentiment'].map({'neutral': 0, 'positive': 1, 'negative': 2})
     df_train['target'] = df_train['target']
@@ -188,6 +194,9 @@ def run():
     df_train = df_train.dropna(subset=['target'])
     df_train = df_train.reset_index(drop=True)
     df_valid = df_valid.reset_index(drop=True)
+    return df_train, df_valid
+def run():
+    df_train, df_valid = load_train_valid_data()
 
     tokenizer = BertTokenizer.from_pretrained(bert_model)
     train_dataset = Tokenize_dataset(
@@ -214,8 +223,8 @@ def run():
     train_data_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size = batch_size,
-        shuffle = False,
-        sampler = sampler
+        shuffle = True,
+        # sampler = sampler
     )
     valid_dataset = Tokenize_dataset(
         text = df_valid['text'].values,
@@ -226,62 +235,105 @@ def run():
     valid_data_loader = torch.utils.data.DataLoader(
         valid_dataset,
         batch_size = batch_size,
-        shuffle = False
+        shuffle = True
     )
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device=torch.device("cpu")
+
+    if torch.cuda.is_available():
+       device = torch.device("cuda:0")
+    # if torch.has_mps:
+    #    device = torch.device("mps")
+    
     loss_function = nn.CrossEntropyLoss().to(device)
     print(f"Device: {device}")
     model = CompleteModel(bert_model, 3).to(device)
     optimizer = AdamW(model.parameters(), lr=learning_rate)
-    scheduler = lr_scheduler.StepLR(
+    total_steps = len(train_data_loader) * epochs
+    scheduler = get_linear_schedule_with_warmup(
         optimizer,
-        step_size = 1,
-        gamma = 0.8
+        num_warmup_steps=0,
+        num_training_steps=total_steps
     )
     history = defaultdict(list)
     best_accuracy = 0
-    model.train()
     for epoch in range(epochs):
-        
         # Show details 
         print(f"Epoch {epoch + 1}/{epochs}")
         print("-" * 10)
-        
-        train_acc, train_loss = train_function(
-            model=model,
-            data_loader=train_data_loader,
-            loss_function=loss_function,
-            optimizer=optimizer,
-            device=device,
-            scheduler=scheduler,
-            n_examples=len(df_train.index)
-        )
-        
+        model.train()
+        train_losses = []
+        train_correct_predictions = 0
+
+        """
+        looping over the entire training dataset
+        """
+    #   with torch.no_grad():
+        for d in train_data_loader:
+            input_ids = d["ids"].to(device)
+            attention_mask = d["mask"].to(device)
+            targets = d["targets"].to(device)
+            
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask
+            )
+            
+            _, preds = torch.max(outputs, dim=1)
+            loss = loss_function(outputs, targets)
+            train_correct_predictions += torch.sum(preds == targets)
+            train_losses.append(loss.item())
+            
+            # Gradient Descent
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.zero_grad()
+            # Backward prop
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+        print("Optimizer lr=%.4f" % (optimizer.param_groups[0]["lr"]))
+        train_acc = train_correct_predictions.double() / len(df_train.index)
+        train_loss = np.mean(train_losses)
         print(f"Train loss {train_loss} accuracy {train_acc}")
+        print("validating")
+
+        model.eval()
+        val_losses = []
+        val_correct_predictions = 0
         
-        # Get model performance (accuracy and loss)
-        val_acc, val_loss = eval_function(
-            model=model,
-            data_loader=valid_data_loader,
-            loss_function=loss_function,
-            device=device,
-            n_examples=len(df_valid.index)
-        )
-        
-        print(f"Val loss {val_loss} accuracy {val_acc}")
-        print()
-        
-        history['train_acc'].append(train_acc)
-        history['train_loss'].append(train_loss)
-        history['val_acc'].append(val_acc)
-        history['val_loss'].append(val_loss)
-        
-        # If we beat prev performance
-        if val_acc > best_accuracy:
-            torch.save(model.state_dict(), 'best_model_state.bin')
-            best_accuracy = val_acc
+        with torch.no_grad():
+            for d in valid_data_loader:
+                input_ids = d["ids"].to(device)
+                attention_mask = d["mask"].to(device)
+                targets = d["targets"].to(device)
+                
+                # Get model ouptuts
+                outputs = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask
+                )
+                print("outputs of eval", outputs);
+                _, preds = torch.max(outputs, dim=1)
+                print(preds, targets, "prediction vs target in eval");
+                loss = loss_function(outputs, targets)
+                val_correct_predictions += torch.sum(preds == targets)
+                val_losses.append(loss.item())
+
+            val_acc =val_correct_predictions.double() / len(df_valid.index)
+            val_loss = np.mean(val_losses)    
+            print(f"Val loss {val_loss} accuracy {val_acc}")
+            print("epoch end, beginning next")
     
+    history['train_acc'].append(train_acc)
+    history['train_loss'].append(train_loss)
+    history['val_acc'].append(val_acc)
+    history['val_loss'].append(val_loss)
+    
+    # If we beat prev performance
+    if val_acc > best_accuracy:
+        torch.save(model.state_dict(), 'best_model_state.bin')
+        best_accuracy = val_acc
+
     plot_graphs(history)
     print("The end")
 
