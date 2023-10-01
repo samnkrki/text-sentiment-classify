@@ -28,10 +28,12 @@ data['sentiment'].value_counts().tolist()
 # configurations
 train_maxlen = 140
 batch_size = 8
-epochs = 10
+epochs = 100
 bert_model = 'bert-base-uncased'
 learning_rate = 2e-5
 map_dict={'neutral': 0, 'positive': 1, 'negative': 2}
+train_frac_to_use = 1
+val_frac_to_use = 1
 
 class Tokenize_dataset:
   """
@@ -184,8 +186,8 @@ def load_train_valid_data():
     df_train = pd.read_csv(training_set_path, encoding="unicode_escape")
     df_valid = pd.read_csv(validation_set_path, encoding="unicode_escape")
 
-    df_train = df_train.sample(frac=0.1)
-    df_valid = df_valid.sample(frac=0.1)
+    df_train = df_train.sample(frac=train_frac_to_use)
+    df_valid = df_valid.sample(frac=val_frac_to_use)
 
     df_train['target'] = df_train['sentiment'].map(map_dict)
     df_train['target'] = df_train['target']
@@ -335,11 +337,11 @@ def run():
             torch.save(model.state_dict(), 'best_model_state.bin')
             best_accuracy = val_acc
 
-    plot_graphs(history)
+    # plot_graphs(history)
     print("The end")
 
 def get_predictions():
-    review_text = "This is ridiculuous."
+    review_text = "Would not love to buy more."
     tokenizer = BertTokenizer.from_pretrained(bert_model)
     encoded_review = tokenizer.encode_plus(
         str(review_text),
@@ -350,9 +352,9 @@ def get_predictions():
     )
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    input_ids = torch.tensor(encoded_review['input_ids']).unsqueeze(0)
-    attention_mask = torch.tensor(encoded_review['attention_mask']).unsqueeze(0)
-    token_type_ids = torch.tensor(encoded_review["token_type_ids"]).unsqueeze(0)
+    input_ids = torch.tensor(encoded_review['input_ids']).to(device).unsqueeze(0)
+    attention_mask = torch.tensor(encoded_review['attention_mask']).to(device).unsqueeze(0)
+    token_type_ids = torch.tensor(encoded_review["token_type_ids"]).to(device).unsqueeze(0)
 
     model = CompleteModel(bert_model, 3).to(device)
     model.load_state_dict(torch.load("best_model_state.bin"), strict=False)
@@ -370,6 +372,6 @@ def get_predictions():
     print(f'Sentiment  : {predicted_sentiment}')
 
 if __name__ == "__main__":
-    run()
+    # run()
     # to run predictions, use the following function
-    # get_predictions()
+    get_predictions()
